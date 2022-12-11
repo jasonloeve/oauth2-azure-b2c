@@ -24,7 +24,10 @@ class Azure extends AbstractProvider
 
     use BearerAuthorizationTrait;
 
-    public $urlLogin = 'https://login.microsoftonline.com/';
+    /**
+     * @var string
+     */
+    protected $urlLogin;
 
     /** @var array|null */
     protected $openIdConfiguration;
@@ -33,7 +36,10 @@ class Azure extends AbstractProvider
 
     public $scopeSeparator = ' ';
 
-    public $tenant = 'common';
+    /**
+     * @var string
+     */
+    protected $tenant;
 
     public $defaultEndPointVersion = self::ENDPOINT_VERSION_1_0;
 
