@@ -29,7 +29,9 @@ class Azure extends AbstractProvider
      */
     protected $urlLogin;
 
-    /** @var array|null */
+    /**
+     * @var array|null
+     */
     protected $openIdConfiguration;
 
     public $scope = [];
