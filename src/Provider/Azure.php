@@ -9,49 +9,57 @@ use League\OAuth2\Client\Grant\AbstractGrant;
 use League\OAuth2\Client\Provider\AbstractProvider;
 use League\OAuth2\Client\Provider\Exception\IdentityProviderException;
 use League\OAuth2\Client\Provider\ResourceOwnerInterface;
+use League\OAuth2\Client\Token\AccessToken;
 use League\OAuth2\Client\Token\AccessTokenInterface;
 use League\OAuth2\Client\Tool\BearerAuthorizationTrait;
 use Psr\Http\Message\RequestInterface;
 use Psr\Http\Message\ResponseInterface;
 use Onfire\OAuth2\Client\Grant\JwtBearer;
-use Onfire\OAuth2\Client\Token\AccessToken;
 
 class Azure extends AbstractProvider
 {
-    const ENDPOINT_VERSION_1_0 = '1.0';
-    const ENDPOINT_VERSION_2_0 = '2.0';
-    const ENDPOINT_VERSIONS = [self::ENDPOINT_VERSION_1_0, self::ENDPOINT_VERSION_2_0];
-
     use BearerAuthorizationTrait;
-
-    /**
-     * @var string
-     */
-    protected $urlLogin;
-
-    /**
-     * @var array|null
-     */
-    protected $openIdConfiguration;
-
-    public $scope = [];
-
-    public $scopeSeparator = ' ';
 
     /**
      * @var string
      */
     protected $tenant;
 
-    public $defaultEndPointVersion = self::ENDPOINT_VERSION_1_0;
+    /**
+     * @var string
+     */
+    protected $editPolicy;
 
-    public $urlAPI = 'https://graph.windows.net/';
+    /**
+     * @var string
+     */
+    protected $resetPolicy;
 
-    public $resource = '';
+    /**
+     * @var string
+     */
+    protected $signinPolicy;
 
-    public $API_VERSION = '1.6';
 
-    public $authWithResource = true;
+    /**
+     * @var array|null
+     */
+    protected $scopes;
+
+    /**
+     * @var string
+     */
+    protected $redirectUri;
+
+    /**
+     * @var string
+     */
+    protected $clientId;
+
+    /**
+     * @var string
+     */
+    protected $clientSecret;
 
     /**
      * The contents of the private key used for app authentication
@@ -60,253 +68,300 @@ class Azure extends AbstractProvider
     protected $clientCertificatePrivateKey = '';
 
     /**
-     * The hexadecimal certificate thumbprint as displayed in the azure portal
-     * @var string
+     * @var array|null
      */
-    protected $clientCertificateThumbprint = '';
+    protected $openIdConfiguration;
 
     public function __construct(array $options = [], array $collaborators = [])
     {
         parent::__construct($options, $collaborators);
-        if (isset($options['scopes'])) {
-            $this->scope = array_merge($options['scopes'], $this->scope);
-        }
-        if (isset($options['defaultEndPointVersion']) &&
-            in_array($options['defaultEndPointVersion'], self::ENDPOINT_VERSIONS, true)) {
-            $this->defaultEndPointVersion = $options['defaultEndPointVersion'];
-        }
+
         $this->grantFactory->setGrant('jwt_bearer', new JwtBearer());
     }
 
     /**
      * @param string $tenant
-     * @param string $version
+     * @param string $policy
      */
-    protected function getOpenIdConfiguration($tenant, $version) {
+    protected function getOpenIdConfiguration($tenant, $policy) {
+
         if (!is_array($this->openIdConfiguration)) {
             $this->openIdConfiguration = [];
         }
+
         if (!array_key_exists($tenant, $this->openIdConfiguration)) {
-            $this->openIdConfiguration[$tenant] = [];
-        }
-        if (!array_key_exists($version, $this->openIdConfiguration[$tenant])) {
-            $versionInfix = $this->getVersionUriInfix($version);
-	          $openIdConfigurationUri = $this->urlLogin . $tenant . $versionInfix . '/.well-known/openid-configuration?appid=' . $this->clientId;
-            
+            $openIdConfigurationUri = 'https://' . $tenant . '.b2clogin.com/' . $tenant . '.onmicrosoft.com/' . $policy . '/v2.0/.well-known/openid-configuration';
+
             $factory = $this->getRequestFactory();
             $request = $factory->getRequestWithOptions(
                 'get',
                 $openIdConfigurationUri,
                 []
             );
+
             $response = $this->getParsedResponse($request);
-            $this->openIdConfiguration[$tenant][$version] = $response;
+            $this->openIdConfiguration[$tenant] = $response;
         }
 
-        return $this->openIdConfiguration[$tenant][$version];
+        return $this->openIdConfiguration[$tenant];
     }
 
     /**
      * @inheritdoc
      */
-    public function getBaseAuthorizationUrl(): string
+    public function getBaseAuthorizationUrl()
     {
-        $openIdConfiguration = $this->getOpenIdConfiguration($this->tenant, $this->defaultEndPointVersion);
+        $openIdConfiguration = $this->getOpenIdConfiguration($this->tenant, $this->signinPolicy);
+
+//        echo '<pre>';
+//        var_dump($openIdConfiguration);
+//        echo '</pre>';
+//        die();
+
         return $openIdConfiguration['authorization_endpoint'];
     }
 
     /**
      * @inheritdoc
      */
-    public function getBaseAccessTokenUrl(array $params): string
+    public function getBaseAccessTokenUrl(array $params)
     {
-        $openIdConfiguration = $this->getOpenIdConfiguration($this->tenant, $this->defaultEndPointVersion);
+        $openIdConfiguration = $this->getOpenIdConfiguration($this->tenant, $this->signinPolicy);
         return $openIdConfiguration['token_endpoint'];
     }
 
-    protected function getAccessTokenRequest(array $params): RequestInterface
+
+    public function getResetUrl(array $params)
     {
-      if ($this->clientCertificatePrivateKey && $this->clientCertificateThumbprint) {
-        $header = [
-          'x5t' => base64_encode(hex2bin($this->clientCertificateThumbprint)),
-        ];
-        $now = time();
-        $payload = [
-          'aud' => "https://login.microsoftonline.com/{$this->tenant}/oauth2/v2.0/token",
-          'exp' => $now + 360,
-          'iat' => $now,
-          'iss' => $this->clientId,
-          'jti' => bin2hex(random_bytes(20)),
-          'nbf' => $now,
-          'sub' => $this->clientId,
-        ];
-        $jwt = JWT::encode($payload, str_replace('\n', "\n", $this->clientCertificatePrivateKey), 'RS256', null, $header);
-
-        unset($params['client_secret']);
-        $params['client_assertion_type'] = 'urn:ietf:params:oauth:client-assertion-type:jwt-bearer';
-        $params['client_assertion'] = $jwt;
-      }
-
-      return parent::getAccessTokenRequest($params);
+        $openIdConfiguration = $this->getOpenIdConfiguration($this->tenant, $this->signinPolicy);
+        return $openIdConfiguration['token_endpoint'];
     }
 
     /**
      * @inheritdoc
      */
-    public function getAccessToken($grant, array $options = []): AccessTokenInterface
+    public function getResourceOwnerDetailsUrl(AccessToken $token)
     {
-        if ($this->defaultEndPointVersion != self::ENDPOINT_VERSION_2_0) {
-            // Version 2.0 does not support the resources parameter
-            // https://docs.microsoft.com/en-us/azure/active-directory/develop/v2-oauth2-auth-code-flow
-            // while version 1.0 does recommend it
-            // https://docs.microsoft.com/en-us/azure/active-directory/develop/v1-protocols-oauth-code
-            if ($this->authWithResource) {
-                $options['resource'] = $this->resource ? $this->resource : $this->urlAPI;
-            }
+        return ''; // shouldn't that return such a URL?
+    }
+
+    /**
+     * @inheritdoc
+     */
+    protected function getDefaultScopes()
+    {
+        return $this->scopes;
+    }
+
+    /**
+     * @inheritdoc
+     */
+    protected function getAccessTokenRequest(array $params)
+    {
+        if ($this->clientCertificatePrivateKey && $this->clientCertificateThumbprint) {
+            $header = [
+                'x5t' => base64_encode(hex2bin($this->clientCertificateThumbprint)),
+            ];
+            $now = time();
+            $payload = [
+                'aud' => "https://login.microsoftonline.com/{$this->tenant}/oauth2/v2.0/token",
+                'exp' => $now + 360,
+                'iat' => $now,
+                'iss' => $this->clientId,
+                'jti' => bin2hex(random_bytes(20)),
+                'nbf' => $now,
+                'sub' => $this->clientId,
+            ];
+            $jwt = JWT::encode($payload, str_replace('\n', "\n", $this->clientCertificatePrivateKey), 'RS256', null, $header);
+
+            unset($params['client_secret']);
+            $params['client_assertion_type'] = 'urn:ietf:params:oauth:client-assertion-type:jwt-bearer';
+            $params['client_assertion'] = $jwt;
         }
+
+        return parent::getAccessTokenRequest($params);
+    }
+
+    /**
+     * @inheritdoc
+     */
+    public function getAccessToken($grant, array $options = [])
+    {
         return parent::getAccessToken($grant, $options);
     }
 
     /**
      * @inheritdoc
      */
-    public function getResourceOwner(\League\OAuth2\Client\Token\AccessToken $token): ResourceOwnerInterface
+    protected function checkResponse(ResponseInterface $response, $data)
     {
-        $data = $token->getIdTokenClaims();
-        return $this->createResourceOwner($data, $token);
+//        if (isset($data['odata.error']) || isset($data['error'])) {
+//            if (isset($data['odata.error']['message']['value'])) {
+//                $message = $data['odata.error']['message']['value'];
+//            } elseif (isset($data['error']['message'])) {
+//                $message = $data['error']['message'];
+//            } elseif (isset($data['error']) && !is_array($data['error'])) {
+//                $message = $data['error'];
+//            } else {
+//                $message = $response->getReasonPhrase();
+//            }
+//
+//            if (isset($data['error_description']) && !is_array($data['error_description'])) {
+//                $message .= PHP_EOL . $data['error_description'];
+//            }
+//
+//            throw new IdentityProviderException(
+//                $message,
+//                $response->getStatusCode(),
+//                $response->getBody()
+//            );
+//        }
     }
 
     /**
      * @inheritdoc
      */
-    public function getResourceOwnerDetailsUrl(\League\OAuth2\Client\Token\AccessToken $token): string
+    protected function createAccessToken(array $response, AbstractGrant $grant)
     {
-        return ''; // shouldn't that return such a URL?
+        return new AccessToken($response, $this);
     }
 
-    public function getObjects($tenant, $ref, &$accessToken, $headers = [])
+    /**
+     * @inheritdoc
+     */
+    protected function createResourceOwner(array $response, AccessToken $token)
     {
-        $objects = [];
-
-        $response = null;
-        do {
-            if (false === filter_var($ref, FILTER_VALIDATE_URL)) {
-                $ref = $tenant . '/' . $ref;
-            }
-
-            $response = $this->request('get', $ref, $accessToken, ['headers' => $headers]);
-            $values   = $response;
-            if (isset($response['value'])) {
-                $values = $response['value'];
-            }
-            foreach ($values as $value) {
-                $objects[] = $value;
-            }
-            if (isset($response['odata.nextLink'])) {
-                $ref = $response['odata.nextLink'];
-            } elseif (isset($response['@odata.nextLink'])) {
-                $ref = $response['@odata.nextLink'];
-            } else {
-                $ref = null;
-            }
-        } while (null != $ref);
-
-        return $objects;
+        return new AzureResourceOwner($response);
     }
+
+    /**
+     * @inheritdoc
+     */
+    public function getResourceOwner(AccessToken $token)
+    {
+        $data = $token->getIdTokenClaims();
+        return $this->createResourceOwner($data, $token);
+    }
+
+
+//    public function getObjects($tenant, $ref, &$accessToken, $headers = [])
+//    {
+//        $objects = [];
+//
+//        $response = null;
+//        do {
+//            if (false === filter_var($ref, FILTER_VALIDATE_URL)) {
+//                $ref = $tenant . '/' . $ref;
+//            }
+//
+//            $response = $this->request('get', $ref, $accessToken, ['headers' => $headers]);
+//            $values   = $response;
+//            if (isset($response['value'])) {
+//                $values = $response['value'];
+//            }
+//            foreach ($values as $value) {
+//                $objects[] = $value;
+//            }
+//            if (isset($response['odata.nextLink'])) {
+//                $ref = $response['odata.nextLink'];
+//            } elseif (isset($response['@odata.nextLink'])) {
+//                $ref = $response['@odata.nextLink'];
+//            } else {
+//                $ref = null;
+//            }
+//        } while (null != $ref);
+//
+//        return $objects;
+//    }
 
     /**
      * @param $accessToken AccessToken|null
      * @return string
      */
-    public function getRootMicrosoftGraphUri($accessToken)
-    {
-        if (is_null($accessToken)) {
-            $tenant = $this->tenant;
-            $version = $this->defaultEndPointVersion;
-        } else {
-            $idTokenClaims = $accessToken->getIdTokenClaims();
-            $tenant = is_array($idTokenClaims) && array_key_exists('tid', $idTokenClaims) ? $idTokenClaims['tid'] : $this->tenant;
-            $version = is_array($idTokenClaims) && array_key_exists('ver', $idTokenClaims) ? $idTokenClaims['ver'] : $this->defaultEndPointVersion;
-        }
-        $openIdConfiguration = $this->getOpenIdConfiguration($tenant, $version);
-        return 'https://' . $openIdConfiguration['msgraph_host'];
-    }
+//    public function getRootMicrosoftGraphUri($accessToken)
+//    {
+//        if (is_null($accessToken)) {
+//            $tenant = $this->tenant;
+//            $version = $this->endPointVersion;
+//        } else {
+//            $idTokenClaims = $accessToken->getIdTokenClaims();
+//            $tenant = is_array($idTokenClaims) && array_key_exists('tid', $idTokenClaims) ? $idTokenClaims['tid'] : $this->tenant;
+//            $version = is_array($idTokenClaims) && array_key_exists('ver', $idTokenClaims) ? $idTokenClaims['ver'] : $this->endPointVersion;
+//        }
+//        $openIdConfiguration = $this->getOpenIdConfiguration($tenant, $version);
+//        return 'https://' . $openIdConfiguration['msgraph_host'];
+//    }
 
-    public function get($ref, &$accessToken, $headers = [], $doNotWrap = false)
-    {
-        $response = $this->request('get', $ref, $accessToken, ['headers' => $headers]);
-
-        return $doNotWrap ? $response : $this->wrapResponse($response);
-    }
-
-    public function post($ref, $body, &$accessToken, $headers = [])
-    {
-        $response = $this->request('post', $ref, $accessToken, ['body' => $body, 'headers' => $headers]);
-
-        return $this->wrapResponse($response);
-    }
-
-    public function put($ref, $body, &$accessToken, $headers = [])
-    {
-        $response = $this->request('put', $ref, $accessToken, ['body' => $body, 'headers' => $headers]);
-
-        return $this->wrapResponse($response);
-    }
-
-    public function delete($ref, &$accessToken, $headers = [])
-    {
-        $response = $this->request('delete', $ref, $accessToken, ['headers' => $headers]);
-
-        return $this->wrapResponse($response);
-    }
-
-    public function patch($ref, $body, &$accessToken, $headers = [])
-    {
-        $response = $this->request('patch', $ref, $accessToken, ['body' => $body, 'headers' => $headers]);
-
-        return $this->wrapResponse($response);
-    }
-
-    public function request($method, $ref, &$accessToken, $options = [])
-    {
-        if ($accessToken->hasExpired()) {
-            $accessToken = $this->getAccessToken('refresh_token', [
-                'refresh_token' => $accessToken->getRefreshToken(),
-            ]);
-        }
-
-        $url = null;
-        if (false !== filter_var($ref, FILTER_VALIDATE_URL)) {
-            $url = $ref;
-        } else {
-            if (false !== strpos($this->urlAPI, 'graph.windows.net')) {
-                $tenant = 'common';
-                if (property_exists($this, 'tenant')) {
-                    $tenant = $this->tenant;
-                }
-                $ref = "$tenant/$ref";
-
-                $url = $this->urlAPI . $ref;
-
-                $url .= (false === strrpos($url, '?')) ? '?' : '&';
-                $url .= 'api-version=' . $this->API_VERSION;
-            } else {
-                $url = $this->urlAPI . $ref;
-            }
-        }
-
-        if (isset($options['body']) && ('array' == gettype($options['body']) || 'object' == gettype($options['body']))) {
-            $options['body'] = json_encode($options['body']);
-        }
-        if (!isset($options['headers']['Content-Type']) && isset($options['body'])) {
-            $options['headers']['Content-Type'] = 'application/json';
-        }
-
-        $request  = $this->getAuthenticatedRequest($method, $url, $accessToken, $options);
-        $response = $this->getParsedResponse($request);
-
-        return $response;
-    }
+    //public function get($ref, &$accessToken, $headers = [], $doNotWrap = false)
+    //{
+    //    $response = $this->request('get', $ref, $accessToken, ['headers' => $headers]);
+    //    return $doNotWrap ? $response : $this->wrapResponse($response);
+    //}
+    //
+    //public function post($ref, $body, &$accessToken, $headers = [])
+    //{
+    //    $response = $this->request('post', $ref, $accessToken, ['body' => $body, 'headers' => $headers]);
+    //    return $this->wrapResponse($response);
+    //}
+    //
+    //public function put($ref, $body, &$accessToken, $headers = [])
+    //{
+    //    $response = $this->request('put', $ref, $accessToken, ['body' => $body, 'headers' => $headers]);
+    //    return $this->wrapResponse($response);
+    //}
+    //
+    //public function delete($ref, &$accessToken, $headers = [])
+    //{
+    //    $response = $this->request('delete', $ref, $accessToken, ['headers' => $headers]);
+    //    return $this->wrapResponse($response);
+    //}
+    //
+    //public function patch($ref, $body, &$accessToken, $headers = [])
+    //{
+    //    $response = $this->request('patch', $ref, $accessToken, ['body' => $body, 'headers' => $headers]);
+    //    return $this->wrapResponse($response);
+    //}
+    //
+    //public function request($method, $ref, &$accessToken, $options = [])
+    //{
+    //    if ($accessToken->hasExpired()) {
+    //        $accessToken = $this->getAccessToken('refresh_token', [
+    //            'refresh_token' => $accessToken->getRefreshToken(),
+    //        ]);
+    //    }
+    //
+    //    $url = null;
+    //    if (false !== filter_var($ref, FILTER_VALIDATE_URL)) {
+    //        $url = $ref;
+    //    } else {
+    //        if (false !== strpos($this->urlAPI, 'graph.windows.net')) {
+    //            $tenant = 'common';
+    //            if (property_exists($this, 'tenant')) {
+    //                $tenant = $this->tenant;
+    //            }
+    //            $ref = "$tenant/$ref";
+    //
+    //            $url = $this->urlAPI . $ref;
+    //
+    //            $url .= (false === strrpos($url, '?')) ? '?' : '&';
+    //            $url .= 'api-version=' . $this->API_VERSION;
+    //        } else {
+    //            $url = $this->urlAPI . $ref;
+    //        }
+    //    }
+    //
+    //    if (isset($options['body']) && ('array' == gettype($options['body']) || 'object' == gettype($options['body']))) {
+    //        $options['body'] = json_encode($options['body']);
+    //    }
+    //    if (!isset($options['headers']['Content-Type']) && isset($options['body'])) {
+    //        $options['headers']['Content-Type'] = 'application/json';
+    //    }
+    //
+    //    $request  = $this->getAuthenticatedRequest($method, $url, $accessToken, $options);
+    //    $response = $this->getParsedResponse($request);
+    //
+    //    return $response;
+    //}
 
     public function getClientId()
     {
@@ -320,17 +375,17 @@ class Azure extends AbstractProvider
      *
      * @return string
      */
-    public function getLogoutUrl($post_logout_redirect_uri = "")
-    {
-        $openIdConfiguration = $this->getOpenIdConfiguration($this->tenant, $this->defaultEndPointVersion);
-        $logoutUri = $openIdConfiguration['end_session_endpoint'];
-
-        if (!empty($post_logout_redirect_uri)) {
-            $logoutUri .= '?post_logout_redirect_uri=' . rawurlencode($post_logout_redirect_uri);
-        }
-
-        return $logoutUri;
-    }
+//    public function getLogoutUrl($post_logout_redirect_uri = "")
+//    {
+//        $openIdConfiguration = $this->getOpenIdConfiguration($this->tenant, $this->endPointVersion);
+//        $logoutUri = $openIdConfiguration['end_session_endpoint'];
+//
+//        if (!empty($post_logout_redirect_uri)) {
+//            $logoutUri .= '?post_logout_redirect_uri=' . rawurlencode($post_logout_redirect_uri);
+//        }
+//
+//        return $logoutUri;
+//    }
 
     /**
      * Validate the access token you received in your application.
@@ -369,7 +424,7 @@ class Azure extends AbstractProvider
             $this->tenant = $tokenClaims['tid'];
         }
 
-        $version = array_key_exists('ver', $tokenClaims) ? $tokenClaims['ver'] : $this->defaultEndPointVersion;
+        $version = array_key_exists('ver', $tokenClaims) ? $tokenClaims['ver'] : $this->endPointVersion;
         $tenant = $this->getTenantDetails($this->tenant, $version);
         if ($tokenClaims['iss'] != $tenant['issuer']) {
             throw new \RuntimeException('Invalid token issuer (tokenClaims[iss]' . $tokenClaims['iss'] . ', tenant[issuer] ' . $tenant['issuer'] . ')!');
@@ -383,7 +438,7 @@ class Azure extends AbstractProvider
      */
     public function getJwtVerificationKeys()
     {
-        $openIdConfiguration = $this->getOpenIdConfiguration($this->tenant, $this->defaultEndPointVersion);
+        $openIdConfiguration = $this->getOpenIdConfiguration($this->tenant, $this->signinPolicy);
         $keysUri = $openIdConfiguration['jwks_uri'];
 
         $factory = $this->getRequestFactory();
@@ -437,103 +492,35 @@ class Azure extends AbstractProvider
 
                 $publicKey = $pkey_array ['key'];
 
-               $keys[$keyinfo['kid']] = new Key($publicKey, 'RS256');;
+                $keys[$keyinfo['kid']] = new Key($publicKey, 'RS256');;
             }
         }
 
         return $keys;
     }
 
-    protected function getVersionUriInfix($version)
-    {
-        return
-            ($version == self::ENDPOINT_VERSION_2_0)
-                ? '/v' . self::ENDPOINT_VERSION_2_0
-                : '';
-    }
-
     /**
      * Get the specified tenant's details.
      *
      * @param string $tenant
-     * @param string|null $version
+     * @param string $policy
      *
      * @return array
      * @throws IdentityProviderException
      */
-    public function getTenantDetails($tenant, $version)
+    public function getTenantDetails($tenant, $policy)
     {
-        return $this->getOpenIdConfiguration($this->tenant, $this->defaultEndPointVersion);
+        return $this->getOpenIdConfiguration($this->tenant, $this->signinPolicy);
     }
 
-    /**
-     * @inheritdoc
-     */
-    protected function checkResponse(ResponseInterface $response, $data): void
-    {
-        if (isset($data['odata.error']) || isset($data['error'])) {
-            if (isset($data['odata.error']['message']['value'])) {
-                $message = $data['odata.error']['message']['value'];
-            } elseif (isset($data['error']['message'])) {
-                $message = $data['error']['message'];
-            } elseif (isset($data['error']) && !is_array($data['error'])) {
-                $message = $data['error'];
-            } else {
-                $message = $response->getReasonPhrase();
-            }
-
-            if (isset($data['error_description']) && !is_array($data['error_description'])) {
-                $message .= PHP_EOL . $data['error_description'];
-            }
-
-            throw new IdentityProviderException(
-                $message,
-                $response->getStatusCode(),
-                $response->getBody()
-            );
-        }
-    }
-
-    /**
-     * @inheritdoc
-     */
-    protected function getDefaultScopes(): array
-    {
-        return $this->scope;
-    }
-
-    /**
-     * @inheritdoc
-     */
-    protected function getScopeSeparator(): string
-    {
-        return $this->scopeSeparator;
-    }
-
-    /**
-     * @inheritdoc
-     */
-    protected function createAccessToken(array $response, AbstractGrant $grant): AccessToken
-    {
-        return new AccessToken($response, $this);
-    }
-
-    /**
-     * @inheritdoc
-     */
-    protected function createResourceOwner(array $response, \League\OAuth2\Client\Token\AccessToken $token): AzureResourceOwner
-    {
-        return new AzureResourceOwner($response);
-    }
-
-    private function wrapResponse($response)
-    {
-        if (empty($response)) {
-            return;
-        } elseif (isset($response['value'])) {
-            return $response['value'];
-        }
-
-        return $response;
-    }
+//    private function wrapResponse($response)
+//    {
+//        if (empty($response)) {
+//            return;
+//        } elseif (isset($response['value'])) {
+//            return $response['value'];
+//        }
+//
+//        return $response;
+//    }
 }
